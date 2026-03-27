@@ -1,7 +1,10 @@
 /*
  * espnow_transport.h — ESP-NOW Transport Plugin for ESP32
- * Version: 0.2.2 — March 2026
- * Совместимость: Arduino ESP32 Core v3.3.7+
+ * Version: 0.3.0 — March 2026
+ *
+ * ИЗМЕНЕНИЯ v0.3:
+ *   - Совместимость с новым FNPacket (magic + version + flags)
+ *   - sendSize считается корректно через FN_HEADER_SIZE
  */
 
 #ifndef ESPNOW_TRANSPORT_H
@@ -17,25 +20,30 @@ static FNPacket rxBuf[RX_BUF_SIZE];
 static volatile uint8_t rxHead = 0;
 static volatile uint8_t rxTail = 0;
 
-// v3.3.7: send callback — wifi_tx_info_t*, not uint8_t*
+// v3.3.7: send callback
 static void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
-  Serial.printf("[ESP-NOW TX] %s\n",
-    status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+  // Serial.printf("[ESP-NOW TX] %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
 }
 
-// v3.3.7: recv callback — esp_now_recv_info_t*
+// v3.3.7: recv callback
 static void onDataRecv(const esp_now_recv_info_t *info,
                        const uint8_t *data, int len) {
-  const uint8_t *mac = info->src_addr;
-  Serial.printf("[ESP-NOW RX] %d bytes from %02X:%02X:%02X:%02X:%02X:%02X\n",
-    len, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
   uint8_t next = (rxHead + 1) % RX_BUF_SIZE;
-  if (next == rxTail) return;
+  if (next == rxTail) return;  // буфер полный
 
-  memset(&rxBuf[rxHead], 0, sizeof(FNPacket));
-  memcpy(&rxBuf[rxHead], data, min((size_t)len, sizeof(FNPacket)));
-  rxHead = next;
+  // Принимаем пакеты v0.2 (без magic) и v0.3 (с magic)
+  // Если пришло без magic — оборачиваем для обратной совместимости
+  if (len >= (int)sizeof(FNPacket) - 200) {
+    memset(&rxBuf[rxHead], 0, sizeof(FNPacket));
+    memcpy(&rxBuf[rxHead], data, min((size_t)len, sizeof(FNPacket)));
+
+    // Если magic отсутствует — это v0.2 пакет, выставляем magic вручную
+    if (rxBuf[rxHead].magic != FN_MAGIC) {
+      rxBuf[rxHead].magic   = FN_MAGIC;
+      rxBuf[rxHead].version = 0x02;  // помечаем как legacy
+    }
+    rxHead = next;
+  }
 }
 
 class EspNowTransport : public Transport {
@@ -67,14 +75,14 @@ public:
     }
 
     _ready = true;
-    Serial.println("[ESP-NOW] Init OK");
+    Serial.println("[ESP-NOW] Init OK (v0.3)");
     return true;
   }
 
   bool send(FNPacket& pkt) override {
     if (!_ready) return false;
-    // Размер = всё до payload + сам payload
-    size_t sendSize = offsetof(FNPacket, payload) + pkt.payloadLen;
+    // Отправляем заголовок + payload (не весь sizeof)
+    size_t sendSize = FN_HEADER_SIZE + pkt.payloadLen;
     if (sendSize > 250) sendSize = 250;
     esp_err_t result = esp_now_send(pkt.dst, (uint8_t*)&pkt, sendSize);
     return (result == ESP_OK);
@@ -88,10 +96,10 @@ public:
   }
 
   TransportMetrics metrics() override {
-    return { 250000, 5, 90 };
+    return { 1000000, 5, 90 };
   }
 
   const char* name() override { return "ESP-NOW"; }
 };
 
-#endif
+#endif // ESPNOW_TRANSPORT_H
