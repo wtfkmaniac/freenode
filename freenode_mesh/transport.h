@@ -68,26 +68,23 @@ public:
 
 // ── Хелперы для работы с пакетами ──────────────────────────────
 
-// Инициализировать пакет с нужными полями
 inline void fnPacketInit(FNPacket& pkt, const uint8_t* srcMac,
                           uint8_t type, uint8_t ttl, uint16_t id) {
   memset(&pkt, 0, sizeof(pkt));
   pkt.magic   = FN_MAGIC;
   pkt.version = FN_PROTO_VER;
   memcpy(pkt.src, srcMac, 6);
-  memset(pkt.dst, 0xFF, 6);  // broadcast по умолчанию
+  memset(pkt.dst, 0xFF, 6);
   pkt.ttl     = ttl;
   pkt.id      = id;
   pkt.type    = type;
   pkt.flags   = 0;
 }
 
-// Проверить валидность пакета
 inline bool fnPacketValid(const FNPacket& pkt) {
-  return (pkt.magic == FN_MAGIC); // version-agnostic: принимаем 0x02 и 0x03
+  return (pkt.magic == FN_MAGIC);
 }
 
-// Проверить что пакет от нас самих (по MAC)
 inline bool fnPacketFromSelf(const FNPacket& pkt, const uint8_t* myMac) {
   return memcmp(pkt.src, myMac, 6) == 0;
 }
