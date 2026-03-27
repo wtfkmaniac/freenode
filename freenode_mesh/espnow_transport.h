@@ -5,6 +5,7 @@
  * ИЗМЕНЕНИЯ v0.3:
  *   - Совместимость с новым FNPacket (magic + version + flags)
  *   - sendSize считается корректно через FN_HEADER_SIZE
+ *   - Обратная совместимость с v0.2 пакетами
  */
 
 #ifndef ESPNOW_TRANSPORT_H
@@ -20,27 +21,22 @@ static FNPacket rxBuf[RX_BUF_SIZE];
 static volatile uint8_t rxHead = 0;
 static volatile uint8_t rxTail = 0;
 
-// v3.3.7: send callback
 static void onDataSent(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
-  // Serial.printf("[ESP-NOW TX] %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+  // silent
 }
 
-// v3.3.7: recv callback
 static void onDataRecv(const esp_now_recv_info_t *info,
                        const uint8_t *data, int len) {
   uint8_t next = (rxHead + 1) % RX_BUF_SIZE;
-  if (next == rxTail) return;  // буфер полный
+  if (next == rxTail) return;
 
-  // Принимаем пакеты v0.2 (без magic) и v0.3 (с magic)
-  // Если пришло без magic — оборачиваем для обратной совместимости
-  if (len >= (int)sizeof(FNPacket) - 200) {
+  if (len >= (int)FN_HEADER_SIZE) {
     memset(&rxBuf[rxHead], 0, sizeof(FNPacket));
     memcpy(&rxBuf[rxHead], data, min((size_t)len, sizeof(FNPacket)));
-
-    // Если magic отсутствует — это v0.2 пакет, выставляем magic вручную
+    // Обратная совместимость v0.2
     if (rxBuf[rxHead].magic != FN_MAGIC) {
       rxBuf[rxHead].magic   = FN_MAGIC;
-      rxBuf[rxHead].version = 0x02;  // помечаем как legacy
+      rxBuf[rxHead].version = 0x02;
     }
     rxHead = next;
   }
@@ -81,7 +77,6 @@ public:
 
   bool send(FNPacket& pkt) override {
     if (!_ready) return false;
-    // Отправляем заголовок + payload (не весь sizeof)
     size_t sendSize = FN_HEADER_SIZE + pkt.payloadLen;
     if (sendSize > 250) sendSize = 250;
     esp_err_t result = esp_now_send(pkt.dst, (uint8_t*)&pkt, sendSize);

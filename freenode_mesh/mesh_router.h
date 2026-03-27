@@ -4,7 +4,7 @@
  *
  * ИЗМЕНЕНИЯ v0.3:
  *   - Cross-transport relay: пакет ретранслируется через ВСЕ транспорты,
- *     кроме того, с которого пришёл (индекс передаётся в processPacket)
+ *     кроме того, с которого пришёл
  *   - Флаг FN_FLAG_RELAYED выставляется при первой ретрансляции
  *   - sendText/sendPing используют fnPacketInit из transport.h
  *   - magic + version проставляются автоматически
@@ -16,9 +16,9 @@
 #include "transport.h"
 #include <esp_mac.h>
 
-#define MAX_TRANSPORTS 4    // макс. число одновременных транспортов
-#define MAX_SEEN       128  // размер таблицы дедупликации
-#define DEFAULT_TTL    5    // TTL по умолчанию
+#define MAX_TRANSPORTS 4
+#define MAX_SEEN       128
+#define DEFAULT_TTL    5
 
 class MeshRouter {
   Transport* _transports[MAX_TRANSPORTS];
@@ -48,14 +48,11 @@ class MeshRouter {
     _seenIdx = (_seenIdx + 1) % MAX_SEEN;
   }
 
-  // ── Ретрансляция через все транспорты кроме источника ─────────
-  // sourceTransportIdx = -1 означает "слать через все" (при отправке от себя)
   void relayPacket(FNPacket& pkt, int8_t sourceTransportIdx) {
     pkt.ttl--;
     pkt.flags |= FN_FLAG_RELAYED;
-
     for (uint8_t i = 0; i < _numTransports; i++) {
-      if (i == (uint8_t)sourceTransportIdx) continue;  // не гоним обратно
+      if (i == (uint8_t)sourceTransportIdx) continue;
       _transports[i]->send(pkt);
     }
     _pktForwarded++;
@@ -78,15 +75,12 @@ public:
 
   void onMessage(void (*cb)(FNPacket&)) { _onMessage = cb; }
 
-  // ── Отправка от себя (через все транспорты) ───────────────────
   bool sendText(const char* text) {
     FNPacket pkt;
     fnPacketInit(pkt, _myMac, FN_TYPE_TEXT, DEFAULT_TTL, (uint16_t)esp_random());
     pkt.payloadLen = min(strlen(text), (size_t)200);
     memcpy(pkt.payload, text, pkt.payloadLen);
-
     markSeen(pkt.id);
-
     bool ok = false;
     for (uint8_t i = 0; i < _numTransports; i++) {
       if (_transports[i]->send(pkt)) ok = true;
@@ -101,9 +95,7 @@ public:
     uint32_t now = millis();
     memcpy(pkt.payload, &now, 4);
     pkt.payloadLen = 4;
-
     markSeen(pkt.id);
-
     bool ok = false;
     for (uint8_t i = 0; i < _numTransports; i++) {
       if (_transports[i]->send(pkt)) ok = true;
@@ -112,42 +104,26 @@ public:
     return ok;
   }
 
-  // ── Обработка входящего пакета с указанием транспорта-источника ─
-  // Вызывается из loop() для каждого полученного пакета.
-  // sourceIdx — индекс транспорта, с которого пришёл пакет.
   void processPacket(FNPacket& pkt, uint8_t sourceIdx) {
-    // Проверяем magic (совместимость v0.2 и v0.3)
     if (!fnPacketValid(pkt)) {
-      Serial.printf("[MESH] Invalid magic 0x%02X, dropping\n", pkt.magic);
       _pktDropped++;
       return;
     }
-
-    // Игнорируем свои пакеты (broadcast вернулся)
-    if (fnPacketFromSelf(pkt, _myMac)) {
-      return;
-    }
-
-    // Дедупликация
+    if (fnPacketFromSelf(pkt, _myMac)) return;
     if (alreadySeen(pkt.id)) {
       _pktDropped++;
       return;
     }
     markSeen(pkt.id);
     _pktReceived++;
-
-    // Доставляем локальному обработчику
     if (_onMessage) _onMessage(pkt);
-
-    // Ретрансляция: TTL > 1 → relay через все транспорты кроме источника
     if (pkt.ttl > 1) {
       relayPacket(pkt, (int8_t)sourceIdx);
-      Serial.printf("[MESH] Relayed id=%u via %d transports (src=%s)\n",
-        pkt.id, _numTransports - 1, _transports[sourceIdx]->name());
+      Serial.printf("[MESH] Relayed id=%u src=%s\n",
+        pkt.id, _transports[sourceIdx]->name());
     }
   }
 
-  // ── Главный цикл ──────────────────────────────────────────────
   void loop() {
     FNPacket pkt;
     for (uint8_t t = 0; t < _numTransports; t++) {
@@ -159,7 +135,6 @@ public:
 
   const uint8_t* mac() const { return _myMac; }
   uint8_t numTransports() const { return _numTransports; }
-
   uint32_t pktReceived()  const { return _pktReceived; }
   uint32_t pktForwarded() const { return _pktForwarded; }
   uint32_t pktDropped()   const { return _pktDropped; }
