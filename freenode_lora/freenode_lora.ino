@@ -278,7 +278,7 @@ class FNBLEScanCB : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* dev) override {
     if (!dev->haveManufacturerData()) return;
 
-    std::string raw = dev->getManufacturerData().toString();
+    std::string raw = dev->getManufacturerData();
     size_t len = raw.length();
     if (len < BLE_MFG_OVERHEAD + FN_HEADER_SIZE) return;
 
@@ -298,7 +298,7 @@ class FNBLEScanCB : public NimBLEScanCallbacks {
     bleRxHead = next;
   }
 
-  void onDiscoveryComplete(const NimBLEScanResults& results) override {
+  void onScanEnd(const NimBLEScanResults& results, int reason) override {
     NimBLEDevice::getScan()->start(0, false);
   }
 };
@@ -548,7 +548,6 @@ void setup() {
   bleAdv->setMinInterval(advUnits);
   bleAdv->setMaxInterval(advUnits);
   bleAdv->setConnectableMode(BLE_GAP_CONN_MODE_NON);
-  bleAdv->setScannable(false);
 
   // ── Ready ──
   Serial.println();
