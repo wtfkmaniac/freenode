@@ -1,111 +1,87 @@
-# FreeNode ESP32 Mesh — Quick Start
+# FreeNode ESP32 Mesh v0.5 — ESP-NOW + BLE
+
+## Что нового в v0.5
+
+**BLE транспорт** — третий канал связи через NimBLE advertising.
+Данные передаются в manufacturer-specific data рекламных пакетов (connectionless broadcast).
+
+| Транспорт | Скорость | Дальность | Роль |
+|-----------|----------|-----------|------|
+| ESP-NOW (2.4GHz) | ~1 Mbps | 50–200 м | Основной, быстрый |
+| BLE (2.4GHz ADV) | ~2 kbps | 10–100 м | Дополнительный, экономичный |
+
+**Ограничение:** legacy BLE ADV = 31 байт max. После overhead остаётся ~9 байт текста.
+PING/PONG проходят полностью, текстовые сообщения обрезаются.
 
 ## Платформа
-- **Плата:** NodeMCU 32S (38 pin) или любая ESP32 DevKit
+- **Плата:** ESP32 DevKit (NodeMCU 32S или аналог)
 - **Среда:** Arduino IDE 2.x
-- **Arduino Core:** ESP32 v2.x или v3.x
+- **Arduino Core:** ESP32 v3.x
 
-## Установка Arduino IDE
+## Зависимости (Library Manager)
 
-1. **Добавить ESP32 в Board Manager:**
-   - File → Preferences → Additional Board Manager URLs:
-   - `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json`
-   - Tools → Board Manager → ищи "esp32" → Install
+| Библиотека | Зачем |
+|-----------|-------|
+| **NimBLE-Arduino** by h2zero | BLE transport |
 
-2. **Настройки платы:**
-   - Tools → Board → "ESP32 Dev Module"
-   - Tools → Upload Speed → 921600
-   - Tools → Flash Size → "4MB (32Mb)"
-   - Tools → Port → твой COM-порт
+ESP-NOW и WiFi встроены в ESP32 Core.
+
+## Установка
+
+1. Board Manager → ESP32 → Install
+2. Library Manager → "NimBLE-Arduino" → Install
+3. Board: "ESP32 Dev Module"
+4. Upload Speed: 921600
 
 ## Файлы проекта
-
-Все файлы должны лежать в одной папке `freenode_mesh/`:
 
 ```
 freenode_mesh/
 ├── freenode_mesh.ino      # Главный скетч
 ├── transport.h            # Абстрактный интерфейс транспорта
 ├── espnow_transport.h     # ESP-NOW плагин
+├── ble_transport.h        # BLE плагин (NimBLE ADV-based)
 └── mesh_router.h          # Mesh-маршрутизатор (flooding)
 ```
 
-**ВАЖНО:** папка должна называться `freenode_mesh` 
-(по имени .ino файла).
-
-## Прошивка
-
-1. Подключить ESP32 по USB
-2. Открыть `freenode_mesh.ino` в Arduino IDE
-3. Выбрать плату и порт
-4. Нажать Upload
-5. Открыть Serial Monitor (115200 baud, "Both NL & CR")
-
-Повторить для каждой платы (2-6 штук).
-
-## Тестирование
-
-### Тест 1: Два узла рядом
-- Прошить 2 ESP32 одинаковым скетчем
-- Открыть Serial Monitor на обоих
-- Написать "hello" на узле A → появляется на узле B
-- Ожидаемый результат: `[MAC-A] TTL:5 hello`
-
-### Тест 2: Ретрансляция через промежуточный узел
-- 3 ESP32: A --- B --- C, расположены в линию
-- A не достаёт до C напрямую (разнести по комнатам)
-- Отправить сообщение с A
-- B получает и ретранслирует
-- C получает от A через B, TTL уменьшен
-
-### Тест 3: PING/RTT
-- На любом узле набрать `/ping`
-- Другие узлы автоматически ответят PONG
-- Замерить RTT (round-trip time)
-
-### Тест 4: Статистика
-- `/stats` — показать счётчики пакетов
-- `/info` — полная информация об узле
-
-## Команды Serial Monitor
+## Команды Serial Monitor (115200 baud)
 ```
-/ping     — отправить PING всем, замерить RTT
-/stats    — статистика пакетов (отправлено/получено/переслано/дропнуто)
-/info     — информация об узле (MAC, heap, uptime, транспорты)
-/help     — список команд
-<текст>   — отправить текстовое сообщение в mesh
+/ping     — PING через все транспорты (ESP-NOW + BLE)
+/stats    — статистика пакетов
+/info     — информация об узле
+/help     — справка
+<текст>   — отправить в mesh
 ```
 
-## Отличия от ESP8266 версии (v0.1)
+## Тестирование BLE
 
-| Что изменилось | ESP8266 (v0.1) | ESP32 (v0.2) |
-|---|---|---|
-| esp_now API | ESP8266-specific (role-based) | ESP32 esp_now.h (peer-based) |
-| MAC адрес | `WiFi.macAddress()` | `WiFi.macAddress()` (тот же) |
-| Random | `random(0, 65535)` | `esp_random()` (аппаратный RNG) |
-| Роутер | 1 транспорт | Мульти-транспорт (до 4 плагинов) |
-| Статистика | Нет | Счётчики пакетов |
-| Команды | Нет | /ping, /stats, /info, /help |
-| PING/PONG | Нет | Есть, с измерением RTT |
-| LED индикация | Нет | Мигание при приёме/отправке |
+### Тест: BLE-only связь
+1. Прошить 2 ESP32
+2. На обоих: Serial Monitor 115200
+3. На одном отправить "hi" — должно прийти по ESP-NOW И по BLE
+4. В логах: `[BLE RX]` и `[ESP-NOW RX]` — пакет пришёл по обоим каналам
+5. Дедупликация в mesh_router отфильтрует дубль (одинаковый ID)
+
+### Тест: BLE при отключённом ESP-NOW
+Пока нет команды `/ble` для принудительного BLE-only.
+Для теста: закомментировать `mesh.addTransport(&espnow)` в setup().
+
+## Как работает BLE транспорт
+
+1. **Приём (scan):** NimBLE сканирует BLE advertising пакеты. Фильтрует по Company ID (0xFFFF) и magic byte (0xFE). Данные кладутся в кольцевой буфер.
+
+2. **Передача (advertise):** `send()` останавливает scan, устанавливает manufacturer data с FNPacket внутри, запускает advertising burst на 1 секунду (~4 ADV пакета при 250ms интервале).
+
+3. **Чередование:** `update()` в loop() следит за таймером ADV и переключает обратно на scan.
+
+4. **Дедупликация:** mesh_router фильтрует дубли по packet ID — если один и тот же пакет пришёл по ESP-NOW и по BLE, второй будет dropped.
 
 ## Следующие шаги
 
-- **Phase 2:** BLE transport plugin (ESP32 имеет BLE из коробки)
-- **Phase 2:** LoRa transport plugin (нужен SX1276/SX1262 модуль)
-- **Phase 3:** Bridge — мост в интернет через Wi-Fi
-- **Phase 3:** AES-256 шифрование пакетов
-
-## Troubleshooting
-
-**"Failed to find peer"** — перезагрузи обе платы. ESP-NOW иногда 
-теряет broadcast peer после переинициализации.
-
-**Пакеты не доходят** — убедись что обе платы на одном Wi-Fi канале.
-По умолчанию channel=0 (автовыбор), должно работать.
-
-**Компиляция ругается на callback** — возможно у тебя Arduino Core v3.x
-с новой сигнатурой. См. комментарий в `espnow_transport.h`.
+- [ ] Extended Advertising (BLE 5) для полного FNPacket на ESP32-S3
+- [ ] BLE Mesh по спецификации (NimBLE Mesh) для production
+- [ ] BLE HID keyboard input (v0.6)
+- [ ] Команда `/ble` для принудительного BLE-only режима
 
 ---
-FreeNode by FreeNod Co Unlimited — Март 2026
+FreeNode v0.5 by FreeNod Co Unlimited — Март 2026
