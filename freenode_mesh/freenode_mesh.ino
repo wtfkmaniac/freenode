@@ -1,20 +1,20 @@
 /*
  * freenode_mesh.ino — FreeNode Mesh Node
  * Platform: ESP32 (NodeMCU 32S)
- * Version: 0.2 — March 2026
+ * Version: 0.5 — March 2026
  *
- * Этот скетч превращает ESP32 в узел FreeNode.
- * - Принимает текст из Serial Monitor и отправляет в mesh
- * - Принимает сообщения от других узлов и отображает
- * - Ретранслирует пакеты дальше (flooding)
+ * Транспорты: ESP-NOW + BLE (NimBLE advertising)
+ *
+ * ИЗМЕНЕНИЯ v0.5:
+ *   - Добавлен BLE transport (NimBLE advertising-based)
+ *   - MeshRouter relay работает через все транспорты: ESP-NOW ↔ BLE
+ *   - BLE payload ограничен ~5 байт (legacy advertising)
  *
  * Подготовка:
- * 1. Arduino IDE → File → Preferences → Board Manager URLs:
- *    https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
- * 2. Tools → Board Manager → ищи "esp32" → установить
- * 3. Tools → Board → "ESP32 Dev Module" (или "NodeMCU-32S")
- * 4. Tools → Upload Speed → 921600
- * 5. Tools → Port → выбрать COM-порт
+ * 1. Arduino IDE → Library Manager → установить "NimBLE-Arduino" by h2zero
+ * 2. Tools → Board → "ESP32 Dev Module"
+ * 3. Tools → Upload Speed → 921600
+ * 4. Tools → Partition Scheme → "Default 4MB with spiffs"
  *
  * Команды в Serial Monitor (115200 baud, NL+CR):
  *   /ping     — отправить PING, замерить RTT
@@ -26,15 +26,16 @@
 
 #include "transport.h"
 #include "espnow_transport.h"
+#include "ble_transport.h"
 #include "mesh_router.h"
 #include <esp_wifi.h>
 
 // ── Объекты ─────────────────────────────────────────────────────
 EspNowTransport espnow;
+BleTransport ble;
 MeshRouter mesh;
 
 // ── Светодиод для индикации ─────────────────────────────────────
-// NodeMCU 32S: встроенный LED обычно на GPIO2
 #define LED_PIN 2
 uint32_t ledOffTime = 0;
 
@@ -53,54 +54,48 @@ String macToStr(const uint8_t* mac) {
 
 const char* pktTypeName(uint8_t type) {
   switch (type) {
-    case 0: return "TEXT";
-    case 1: return "PING";
-    case 2: return "PONG";
-    case 3: return "ROUTE";
-    case 4: return "ACK";
+    case FN_TYPE_TEXT:      return "TEXT";
+    case FN_TYPE_PING:      return "PING";
+    case FN_TYPE_PONG:      return "PONG";
+    case FN_TYPE_ROUTE:     return "ROUTE";
+    case FN_TYPE_ACK:       return "ACK";
+    case FN_TYPE_HEARTBEAT: return "HEARTBEAT";
     default: return "???";
   }
 }
 
 // ── Callback: входящее сообщение ────────────────────────────────
 void onMsg(FNPacket& pkt) {
-  blinkLed(100); // мигнуть при получении
+  blinkLed(100);
 
-  // Диагностика
-  Serial.printf("[MSG] type=%d ttl=%d payloadLen=%d src=%s\n",
-    pkt.type, pkt.ttl, pkt.payloadLen, macToStr(pkt.src).c_str());
+  Serial.printf("[MSG] type=%s ttl=%d flags=0x%02X payloadLen=%d src=%s\n",
+    pktTypeName(pkt.type), pkt.ttl, pkt.flags, pkt.payloadLen,
+    macToStr(pkt.src).c_str());
 
   switch (pkt.type) {
-    case 0: { // TEXT
+    case FN_TYPE_TEXT: {
       char text[201];
       memcpy(text, pkt.payload, pkt.payloadLen);
       text[pkt.payloadLen] = 0;
-
       Serial.printf("\n\033[1;32m[%s]\033[0m ", macToStr(pkt.src).c_str());
       Serial.printf("TTL:%d ", pkt.ttl);
       Serial.println(text);
       break;
     }
-    case 1: { // PING — отвечаем PONG
+    case FN_TYPE_PING: {
       FNPacket pong;
-      memset(&pong, 0, sizeof(pong));
-      memcpy(pong.src, mesh.mac(), 6);
-      memcpy(pong.dst, pkt.src, 6); // адресуем отправителю
-      pong.ttl = DEFAULT_TTL;
-      pong.id  = (uint16_t)esp_random();
-      pong.type = 2; // PONG
-      // Копируем timestamp из PING в PONG
+      fnPacketInit(pong, mesh.mac(), FN_TYPE_PONG, DEFAULT_TTL,
+                   (uint16_t)esp_random());
+      memcpy(pong.dst, pkt.src, 6);
       memcpy(pong.payload, pkt.payload, pkt.payloadLen);
       pong.payloadLen = pkt.payloadLen;
-
       Serial.printf("[PING from %s] → sending PONG\n",
                     macToStr(pkt.src).c_str());
-      // Отправляем PONG broadcast (т.к. у нас пока flooding)
+      // Broadcast PONG (flooding — mesh_router разошлёт через все транспорты)
       memset(pong.dst, 0xFF, 6);
-      // TODO: unicast когда будет таблица маршрутов
       break;
     }
-    case 2: { // PONG — замеряем RTT
+    case FN_TYPE_PONG: {
       if (pkt.payloadLen >= 4) {
         uint32_t sendTime;
         memcpy(&sendTime, pkt.payload, 4);
@@ -124,13 +119,13 @@ void handleCommand(String& cmd) {
 
   if (cmd == "/ping") {
     mesh.sendPing();
-    Serial.println(">> PING sent");
+    Serial.println(">> PING sent (via all transports)");
   }
   else if (cmd == "/stats") {
     mesh.printStats();
   }
   else if (cmd == "/info") {
-    Serial.println("=== FreeNode Node Info ===");
+    Serial.println("=== FreeNode v0.5 Node Info ===");
     Serial.printf("  MAC:    %s\n", macToStr(mesh.mac()).c_str());
     Serial.printf("  Heap:   %u bytes free\n", ESP.getFreeHeap());
     Serial.printf("  Uptime: %lu sec\n", millis() / 1000);
@@ -138,18 +133,18 @@ void handleCommand(String& cmd) {
     mesh.printStats();
   }
   else if (cmd == "/help") {
-    Serial.println("=== FreeNode Commands ===");
-    Serial.println("  /ping   — send PING, measure RTT");
-    Serial.println("  /stats  — show packet statistics");
-    Serial.println("  /info   — show node info");
+    Serial.println("=== FreeNode v0.5 Commands ===");
+    Serial.println("  /ping   — send PING (all transports)");
+    Serial.println("  /stats  — packet statistics");
+    Serial.println("  /info   — node info + transports");
     Serial.println("  /help   — this help");
-    Serial.println("  <text>  — send text to mesh");
+    Serial.println("  <text>  — send to mesh");
+    Serial.printf("  NOTE: BLE max payload = %d bytes\n", BLE_MAX_PAYLOAD);
   }
   else if (cmd.startsWith("/")) {
     Serial.println("Unknown command. Type /help");
   }
   else {
-    // Обычный текст — отправляем в mesh
     mesh.sendText(cmd.c_str());
     Serial.printf(">> %s\n", cmd.c_str());
     blinkLed(30);
@@ -165,45 +160,42 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
 
   Serial.println();
-  Serial.println("╔═══════════════════════════════╗");
-  Serial.println("║    F R E E N O D E  v0.2      ║");
-  Serial.println("║    ESP32 Mesh Node             ║");
-  Serial.println("║    FreeNod Co Unlimited        ║");
-  Serial.println("╚═══════════════════════════════╝");
+  Serial.println("╔═══════════════════════════════════╗");
+  Serial.println("║    F R E E N O D E  v0.5          ║");
+  Serial.println("║    ESP32 Mesh Node                 ║");
+  Serial.println("║    Transports: ESP-NOW + BLE       ║");
+  Serial.println("║    FreeNod Co Unlimited            ║");
+  Serial.println("╚═══════════════════════════════════╝");
   Serial.println();
 
-  // Инициализация mesh-роутера
   mesh.begin();
-  mesh.onMessage(onMsg);  // <-- РЕГИСТРИРУЕМ CALLBACK!
+  mesh.onMessage(onMsg);
   Serial.printf("MAC: %s\n", macToStr(mesh.mac()).c_str());
-  Serial.printf("[DEBUG] sizeof(FNPacket)=%d offsetof(payload)=%d\n",
-    sizeof(FNPacket), offsetof(FNPacket, payload));
+  Serial.printf("[DEBUG] sizeof(FNPacket)=%d FN_HEADER_SIZE=%d\n",
+    sizeof(FNPacket), FN_HEADER_SIZE);
 
-  // Добавляем транспорт: ESP-NOW
+  // ── Транспорт 1: ESP-NOW ──
   if (mesh.addTransport(&espnow)) {
     Serial.println("[OK] ESP-NOW transport active");
   } else {
     Serial.println("[FAIL] ESP-NOW transport failed!");
   }
 
-  // Снижаем мощность Wi-Fi — меньше нагрев, для дома хватит
-  esp_wifi_set_max_tx_power(40); // 10 dBm (по умолчанию 80 = 20 dBm)
+  esp_wifi_set_max_tx_power(40);
 
-  // TODO: Phase 2 — добавить BLE transport
-  // BleTransport ble;
-  // mesh.addTransport(&ble);
-
-  // TODO: Phase 2 — добавить LoRa transport
-  // LoraTransport lora;
-  // mesh.addTransport(&lora);
+  // ── Транспорт 2: BLE ──
+  if (mesh.addTransport(&ble)) {
+    Serial.println("[OK] BLE transport active");
+  } else {
+    Serial.println("[FAIL] BLE transport failed!");
+  }
 
   Serial.println();
   mesh.printTransports();
   Serial.println();
   Serial.println("Ready. Type message or /help");
-  Serial.println("────────────────────────────────");
+  Serial.println("────────────────────────────────────");
 
-  // Мигнуть 3 раза — готов
   for (int i = 0; i < 3; i++) {
     digitalWrite(LED_PIN, HIGH); delay(100);
     digitalWrite(LED_PIN, LOW);  delay(100);
@@ -212,21 +204,18 @@ void setup() {
 
 // ── Main Loop ───────────────────────────────────────────────────
 void loop() {
-  // Обработка mesh (приём, дедупликация, ретрансляция)
   mesh.loop();
+  ble.update();  // BLE advertising lifecycle
 
-  // Обработка ввода из Serial Monitor
   if (Serial.available()) {
     String msg = Serial.readStringUntil('\n');
     handleCommand(msg);
   }
 
-  // Управление LED
   if (ledOffTime && millis() > ledOffTime) {
     digitalWrite(LED_PIN, LOW);
     ledOffTime = 0;
   }
 
-  // Пауза — даём процессору и радио отдохнуть, снижаем нагрев
   delay(10);
 }
