@@ -8,6 +8,8 @@
  *   - Флаг FN_FLAG_RELAYED выставляется при первой ретрансляции
  *   - sendText/sendPing используют fnPacketInit из transport.h
  *   - magic + version проставляются автоматически
+ *   - sendPacket(FNPacket&) — публичный метод для отправки пре-собранных
+ *     пакетов (например, PONG в ответ на PING)
  */
 
 #ifndef MESH_ROUTER_H
@@ -74,6 +76,21 @@ public:
   }
 
   void onMessage(void (*cb)(FNPacket&)) { _onMessage = cb; }
+
+  // Отправка произвольного пре-собранного пакета.
+  // Выставляет magic/version, маркирует id как seen (self-dedup)
+  // и шлёт по всем зарегистрированным транспортам.
+  bool sendPacket(FNPacket& pkt) {
+    pkt.magic   = FN_MAGIC;
+    pkt.version = FN_PROTO_VER;
+    markSeen(pkt.id);
+    bool ok = false;
+    for (uint8_t i = 0; i < _numTransports; i++) {
+      if (_transports[i]->send(pkt)) ok = true;
+    }
+    if (ok) _pktSent++;
+    return ok;
+  }
 
   bool sendText(const char* text) {
     FNPacket pkt;
