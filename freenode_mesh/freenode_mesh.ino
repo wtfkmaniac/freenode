@@ -66,7 +66,7 @@ void onMsg(FNPacket& pkt) {
     pkt.type, pkt.ttl, pkt.payloadLen, macToStr(pkt.src).c_str());
 
   switch (pkt.type) {
-    case 0: { // TEXT
+    case FN_TYPE_TEXT: {
       char text[201];
       memcpy(text, pkt.payload, pkt.payloadLen);
       text[pkt.payloadLen] = 0;
@@ -74,20 +74,18 @@ void onMsg(FNPacket& pkt) {
         macToStr(pkt.src).c_str(), pkt.ttl, text);
       break;
     }
-    case 1: { // PING → PONG
+    case FN_TYPE_PING: { // PING → PONG
       FNPacket pong;
-      memset(&pong, 0, sizeof(pong));
-      memcpy(pong.src, mesh.mac(), 6);
-      memset(pong.dst, 0xFF, 6);
-      pong.ttl = DEFAULT_TTL;
-      pong.id  = (uint16_t)esp_random();
-      pong.type = 2;
+      fnPacketInit(pong, mesh.mac(), FN_TYPE_PONG, DEFAULT_TTL,
+                   (uint16_t)esp_random());
       memcpy(pong.payload, pkt.payload, pkt.payloadLen);
       pong.payloadLen = pkt.payloadLen;
-      Serial.printf("[PING from %s] → PONG\n", macToStr(pkt.src).c_str());
+      mesh.sendPacket(pong);
+      Serial.printf("[PING from %s] → PONG sent\n",
+                    macToStr(pkt.src).c_str());
       break;
     }
-    case 2: { // PONG
+    case FN_TYPE_PONG: {
       if (pkt.payloadLen >= 4) {
         uint32_t t0;
         memcpy(&t0, pkt.payload, 4);
